@@ -33,6 +33,8 @@ h1{font-size:clamp(28px,5vw,46px);line-height:1.1;margin:0 0 12px}h1 em{font-sty
 .hidden{display:none!important}
 .gamehead{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:18px}
 .stage{font-size:13px;color:var(--gold);font-weight:800;letter-spacing:.08em}
+.stage.review-mode{color:#7ce0ff}
+.review-badge{display:inline-block;background:rgba(101,185,255,.16);border:1px solid rgba(101,185,255,.45);color:#8ad4ff;font-size:11px;font-weight:800;padding:2px 8px;border-radius:999px;margin-left:8px;vertical-align:middle}
 .progresslabel{font-size:12px;color:var(--muted)}
 .track{height:8px;background:#091423;border-radius:20px;overflow:hidden;margin:10px 0 24px}
 .fill{height:100%;background:linear-gradient(90deg,#5db8ff,#f5c76b);width:0%;transition:width .25s}
@@ -88,7 +90,7 @@ h1{font-size:clamp(28px,5vw,46px);line-height:1.1;margin:0 0 12px}h1 em{font-sty
     <div class="instructions">
       <div class="rule"><b>01 · Không lặp câu</b><span>300 câu được xáo trộn, mỗi câu chỉ xuất hiện một lần trong lượt chơi.</span></div>
       <div class="rule"><b>02 · Đúng mới tiến</b><span>Chọn sai sẽ hiện đáp án đúng; cần trả lời lại câu đó để tiếp tục.</span></div>
-      <div class="rule"><b>03 · Highlight ý chính</b><span>Tự động làm nổi bật thuật ngữ cốt lõi và từ khóa phủ định trong câu hỏi.</span></div>
+      <div class="rule"><b>03 · Tổng ôn mỗi 5 ải</b><span>Cứ qua 5 ải (50 câu) sẽ mở 1 ải Tổng ôn gom các câu từng sai và câu trọng tâm.</span></div>
     </div>
   </section>
 
@@ -480,7 +482,11 @@ function fresh() {
     stageMistakes: 0,
     done: 0,
     used: [],
-    stageDone: Array(30).fill(false)
+    stageDone: Array(30).fill(false),
+    recentWrong: [],
+    inReview: false,
+    reviewQueue: [],
+    reviewPos: 0
   };
 }
 
@@ -489,7 +495,16 @@ function save() {
   try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {}
 }
 function load() {
-  try { return JSON.parse(localStorage.getItem(KEY) || "null"); } catch (e) { return null; }
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY) || "null");
+    if (s) {
+      s.recentWrong = s.recentWrong || [];
+      s.reviewQueue = s.reviewQueue || [];
+      s.inReview = !!s.inReview;
+      s.reviewPos = s.reviewPos || 0;
+    }
+    return s;
+  } catch (e) { return null; }
 }
 
 // Chuyển đổi giữa các màn hình giao diện
@@ -507,7 +522,7 @@ function start() {
 function resume() {
   state = load();
   if (!state) return start();
-  if (state.done >= TOTAL) {
+  if (state.done >= TOTAL && !state.inReview) {
     show("finish");
     return;
   }
@@ -558,12 +573,29 @@ function highlightQuestion(text) {
 // Hiển thị câu hỏi hiện tại và các lựa chọn đã xáo trộn
 function renderQuestion() {
   answered = false;
-  const index = state.order[state.done], q = QUESTIONS[index];
+  const isRev = state.inReview;
+  const index = isRev ? state.reviewQueue[state.reviewPos] : state.order[state.done];
+  const q = QUESTIONS[index];
   currentOptions = shuffle(q.opts.map(o => ({ ...o })));
-  $("stageLabel").textContent = `ẢI ${String(state.stage + 1).padStart(2, "0")} / 30`;
-  $("overallLabel").textContent = `Tiến độ: ${state.done} / ${TOTAL}`;
-  $("progressFill").style.width = (state.done / TOTAL * 100) + "%";
-  $("questionNo").textContent = `CÂU ${state.pos + 1} / ${PER_STAGE}`;
+
+  const stageEl = $("stageLabel");
+  if (isRev) {
+    const blockStart = state.stage - 3;
+    const blockEnd = state.stage + 1;
+    const isGrand = (blockEnd === 15 || blockEnd === 30);
+    stageEl.className = "stage review-mode";
+    stageEl.innerHTML = `${isGrand ? "ĐẠI TỔNG ÔN" : "TỔNG ÔN"} · ẢI ${String(blockStart).padStart(2, "0")}–${String(blockEnd).padStart(2, "0")} <span class="review-badge">ÔN TẬP</span>`;
+    $("overallLabel").textContent = `Củng cố kiến thức cụm 50 câu (Tiến độ chính: ${state.done}/${TOTAL})`;
+    $("progressFill").style.width = ((state.reviewPos / state.reviewQueue.length) * 100) + "%";
+    $("questionNo").textContent = `CÂU ÔN ${state.reviewPos + 1} / ${state.reviewQueue.length}`;
+  } else {
+    stageEl.className = "stage";
+    stageEl.textContent = `ẢI ${String(state.stage + 1).padStart(2, "0")} / 30`;
+    $("overallLabel").textContent = `Tiến độ: ${state.done} / ${TOTAL}`;
+    $("progressFill").style.width = (state.done / TOTAL * 100) + "%";
+    $("questionNo").textContent = `CÂU ${state.pos + 1} / ${PER_STAGE}`;
+  }
+
   $("mistakes").textContent = `Sai: ${state.stageMistakes} (toàn hành trình: ${state.mistakes})`;
   $("questionText").innerHTML = `<span style="color:var(--muted);font-weight:700">${q.id}.</span> ` + highlightQuestion(q.q);
   $("answers").innerHTML = "";
@@ -582,12 +614,31 @@ function renderQuestion() {
   $("feedback").className = "feedback hidden";
   $("feedback").textContent = "";
   $("nextBtn").classList.add("hidden");
-  $("hint").textContent = "Chọn một đáp án để trả lời.";
+  $("hint").textContent = isRev ? "Vượt qua bài Tổng ôn để mở chặng tiếp theo." : "Chọn một đáp án để trả lời.";
+}
+
+// Tạo danh sách câu hỏi cho ải Tổng ôn sau mỗi 5 ải
+function buildReviewQueue() {
+  const blockEndIdx = state.done; // bội số của 50 (50, 100, 150, 200, 250, 300)
+  const blockStartIdx = Math.max(0, blockEndIdx - 50);
+  const blockPool = state.order.slice(blockStartIdx, blockEndIdx);
+  const targetCount = (blockEndIdx === 150 || blockEndIdx === 300) ? 15 : 10;
+
+  // Ưu tiên toàn bộ các câu đã làm sai trong 5 ải vừa qua
+  const wrongUnique = [...new Set(state.recentWrong)];
+  const remainingPool = shuffle(blockPool.filter(idx => !wrongUnique.includes(idx)));
+  const combined = [...wrongUnique];
+  while (combined.length < targetCount && remainingPool.length > 0) {
+    combined.push(remainingPool.pop());
+  }
+  return shuffle(combined);
 }
 
 // Xử lý khi người chơi chọn một đáp án
 function choose(o, btn) {
   if (answered) return;
+  const currentQIdx = state.inReview ? state.reviewQueue[state.reviewPos] : state.order[state.done];
+
   if (o.correct) {
     answered = true;
     btn.classList.add("correct");
@@ -595,19 +646,38 @@ function choose(o, btn) {
     $("feedback").className = "feedback good";
     $("feedback").textContent = "Chính xác! Câu trả lời đúng.";
     $("hint").textContent = "Đã ghi nhận câu đúng.";
-    state.done++;
-    state.pos++;
-    if (state.pos >= PER_STAGE) {
-      state.stageDone[state.stage] = true;
-      save();
-      setTimeout(stageComplete, 450);
+
+    if (state.inReview) {
+      state.reviewPos++;
+      if (state.reviewPos >= state.reviewQueue.length) {
+        state.inReview = false;
+        state.reviewQueue = [];
+        state.reviewPos = 0;
+        state.recentWrong = [];
+        save();
+        setTimeout(reviewComplete, 450);
+      } else {
+        $("nextBtn").classList.remove("hidden");
+        save();
+      }
     } else {
-      $("nextBtn").classList.remove("hidden");
-      save();
+      state.done++;
+      state.pos++;
+      if (state.pos >= PER_STAGE) {
+        state.stageDone[state.stage] = true;
+        save();
+        setTimeout(stageComplete, 450);
+      } else {
+        $("nextBtn").classList.remove("hidden");
+        save();
+      }
     }
   } else {
     state.mistakes++;
     state.stageMistakes++;
+    if (!state.inReview && !state.recentWrong.includes(currentQIdx)) {
+      state.recentWrong.push(currentQIdx);
+    }
     btn.classList.add("wrong");
     btn.disabled = true;
     $("feedback").className = "feedback bad";
@@ -624,7 +694,50 @@ function next() {
   renderQuestion();
 }
 
+function renderStageGrid() {
+  const grid = $("stageGrid");
+  grid.innerHTML = "";
+  state.stageDone.forEach((d, i) => {
+    const c = document.createElement("div");
+    c.className = "stagecell" + (d ? " done" : "") + (i === state.stage ? " current" : "");
+    c.textContent = (i + 1) % 5 === 0 ? `${i + 1}★` : `${i + 1}`;
+    grid.appendChild(c);
+  });
+}
+
 function stageComplete() {
+  const stageNum = state.stage + 1;
+  const isMilestone = (stageNum % 5 === 0);
+
+  if (isMilestone) {
+    const wrongCount = state.recentWrong.length;
+    const isGrand = (stageNum === 15 || stageNum === 30);
+    show("stageDone");
+    $("doneTitle").textContent = `Hoàn thành Ải ${stageNum}! Mở khóa ${isGrand ? "Đại Tổng Ôn" : "Tổng Ôn"}`;
+    $("doneText").textContent = wrongCount > 0
+      ? `Bạn đã xong 5 ải (${state.done}/300 câu) và có ${wrongCount} câu từng chọn nhầm. Hãy vượt qua bài Tổng ôn để chốt kiến thức!`
+      : `Xuất sắc! Bạn vượt qua 5 ải (${state.done}/300 câu) không sai câu nào. Hãy làm bài Tổng ôn nhanh để khắc sâu kiến thức!`;
+    renderStageGrid();
+    $("continueBtn").textContent = `VÀO ${isGrand ? "ĐẠI TỔNG ÔN" : "TỔNG ÔN"} (ẢI ${stageNum - 4}–${stageNum}) →`;
+    return;
+  }
+
+  if (state.done >= TOTAL) {
+    save();
+    show("finish");
+    $("totalMistakes").textContent = state.mistakes;
+    return;
+  }
+
+  show("stageDone");
+  $("doneTitle").textContent = `Vượt qua ải ${stageNum}!`;
+  $("doneText").textContent = `Bạn đã trả lời đúng đủ 10/10 câu. Tổng tiến độ: ${state.done}/300 câu (còn ${5 - (stageNum % 5)} ải nữa đến Tổng ôn).`;
+  renderStageGrid();
+  $("continueBtn").textContent = `MỞ ẢI ${String(stageNum + 1).padStart(2, "0")} →`;
+}
+
+function reviewComplete() {
+  const stageNum = state.stage + 1;
   if (state.done >= TOTAL) {
     save();
     show("finish");
@@ -632,20 +745,26 @@ function stageComplete() {
     return;
   }
   show("stageDone");
-  $("doneTitle").textContent = `Vượt qua ải ${state.stage + 1}!`;
-  $("doneText").textContent = `Bạn đã trả lời đúng đủ 10/10 câu. Tổng tiến độ: ${state.done}/300 câu.`;
-  const grid = $("stageGrid");
-  grid.innerHTML = "";
-  state.stageDone.forEach((d, i) => {
-    const c = document.createElement("div");
-    c.className = "stagecell" + (d ? " done" : "") + (i === state.stage ? " current" : "");
-    c.textContent = i + 1;
-    grid.appendChild(c);
-  });
-  $("continueBtn").textContent = `MỞ ẢI ${String(state.stage + 2).padStart(2, "0")} →`;
+  $("doneTitle").textContent = `Hoàn tất Tổng ôn Ải ${stageNum - 4}–${stageNum}!`;
+  $("doneText").textContent = `Kiến thức cụm 50 câu vừa rồi đã được củng cố vững vàng. Sẵn sàng bước sang chặng tiếp theo!`;
+  renderStageGrid();
+  $("continueBtn").textContent = `MỞ ẢI ${String(stageNum + 1).padStart(2, "0")} →`;
 }
 
 function continueGame() {
+  const stageNum = state.stage + 1;
+  // Nếu vừa xong mốc 5 ải và chưa làm bài Tổng ôn thì kích hoạt Tổng ôn
+  if (stageNum % 5 === 0 && state.stageDone[state.stage] && !state.inReview && state.done === stageNum * PER_STAGE && state.reviewQueue.length === 0 && $("continueBtn").textContent.includes("TỔNG ÔN")) {
+    state.inReview = true;
+    state.reviewQueue = buildReviewQueue();
+    state.reviewPos = 0;
+    state.stageMistakes = 0;
+    save();
+    renderQuestion();
+    show("game");
+    return;
+  }
+
   state.stage++;
   state.pos = 0;
   state.stageMistakes = 0;
@@ -682,10 +801,10 @@ $("homeBtn").onclick = () => {
 
 function updateHome() {
   const s = load();
-  if (s && s.done > 0 && s.done < TOTAL) {
+  if (s && s.done > 0 && (s.done < TOTAL || s.inReview)) {
     $("resumeBtn").classList.remove("hidden");
     $("resetBtn").classList.remove("hidden");
-    $("resumeBtn").textContent = `TIẾP TỤC · ${s.done}/300`;
+    $("resumeBtn").textContent = s.inReview ? `TIẾP TỤC TỔNG ÔN · ${s.done}/300` : `TIẾP TỤC · ${s.done}/300`;
   } else {
     $("resumeBtn").classList.add("hidden");
     $("resetBtn").classList.add("hidden");
